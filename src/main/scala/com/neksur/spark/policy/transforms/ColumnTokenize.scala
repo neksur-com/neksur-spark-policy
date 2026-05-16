@@ -55,21 +55,30 @@ object ColumnTokenize {
 
   /**
    * Build the tokenized-column expression. The salt ID is read from
-   * `t.params("tenant_salt_id")` — REQUIRED (WR-10). A missing salt is
-   * a hard failure: two distinct tenants both missing the salt would
-   * produce IDENTICAL tokens for identical inputs
-   * (`sha256("default" || "ssn" || "123-45-6789")` is the same across
+   * `t.params("tenant_salt_id")` — REQUIRED (WR-10 iteration 1, CR-A1
+   * iteration 2). A missing OR EMPTY salt is a hard failure: two
+   * distinct tenants both missing the salt — or both supplying an
+   * empty-string value — would produce IDENTICAL tokens for identical
+   * inputs (`sha256("" || "ssn" || "123-45-6789")` is the same across
    * tenants), enabling cross-tenant correlation by anyone with
-   * multi-tenant warehouse access. The previous "default" fallback
-   * silently undermined the per-tenant isolation guarantee documented
-   * at the file level.
+   * multi-tenant warehouse access.
+   *
+   * Iteration 1 (WR-10) replaced the silent `"default"` fallback with
+   * `getOrElse(throw)` — but `Map.getOrElse` only fires the default
+   * branch on missing KEY, not on empty VALUE. Iteration 2 (CR-A1)
+   * chains `.filter(_.nonEmpty)` between `.get` and `.getOrElse` so
+   * `Some("")` becomes `None` and the throw branch fires for BOTH the
+   * missing-key case AND the empty-string-value case. An operator
+   * misconfiguring `tenant_salt_id=""` (terraform default, JSON null
+   * flattened to empty, deleted-but-not-removed env var, ...) now
+   * fails closed instead of opening the back-door correlation path.
    */
   def apply(df: DataFrame, t: ColumnTransform): Column = {
     val _ = df // reserved for future schema-aware tokenization
-    val tenantSaltID = t.params.getOrElse("tenant_salt_id",
+    val tenantSaltID = t.params.get("tenant_salt_id").filter(_.nonEmpty).getOrElse(
       throw new SparkException(
         s"ColumnTokenize: tenant_salt_id is required for column ${t.column} — " +
-          s"a missing or default salt would enable cross-tenant correlation by " +
+          s"missing or empty salt would enable cross-tenant correlation by " +
           s"producing identical tokens across tenants for identical inputs."
       )
     )
