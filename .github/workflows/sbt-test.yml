@@ -1,0 +1,78 @@
+# Neksur Spark Policy — sbt test CI.
+#
+# Runs `sbt +test` on every push to main and every pull request, against
+# the matrix declared in build.sbt's crossScalaVersions (currently only
+# 2.12.18; Scala 2.13 cell future).
+#
+# Per Phase 2 RESEARCH §"Standard Stack JVM" line 168-178 + §"Validation
+# Architecture" lines 1156-1185:
+#   - JDK 17 (Spark 3.5 supports 8/11/17; 17 is the modern LTS pick).
+#   - actions/setup-java@v4 with Temurin distribution.
+#   - Cache ~/.sbt + ~/.ivy2 keyed on *.sbt + project/build.properties so
+#     sbt-version bumps and dep changes both invalidate.
+#   - sbt-managed Spark session (Plan 02-02) — not Spark testcontainer
+#     (testcontainer infra lives in the Go monorepo per Phase 1).
+
+name: sbt test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sbt-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: sbt +test (Scala 2.12.18, Spark 3.5.4, Iceberg 1.6.1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Cache sbt + Ivy resolution
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.sbt
+            ~/.ivy2/cache
+            ~/.cache/coursier
+          key: ${{ runner.os }}-sbt-${{ hashFiles('**/*.sbt', 'project/build.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-sbt-
+
+      - name: Install sbt
+        # GitHub-hosted ubuntu-latest runners don't ship sbt out of the box
+        # (only when explicitly requested). Use the sbt installer from
+        # the Scala org. Pinned to the same major as project/build.properties.
+        run: |
+          mkdir -p $HOME/bin
+          curl -L https://github.com/sbt/sbt/releases/download/v1.9.7/sbt-1.9.7.tgz \
+            | tar -xz -C $HOME
+          echo "$HOME/sbt/bin" >> "$GITHUB_PATH"
+
+      - name: sbt version sanity
+        run: sbt --version || true
+
+      - name: Compile (warm caches before test)
+        run: sbt --batch +compile
+
+      - name: Run tests
+        # `+` triggers cross-Scala matrix evaluation; today only 2.12.18
+        # but the `+` future-proofs the workflow for a 2.13 cell add
+        # without touching this file.
+        run: sbt --batch +test
