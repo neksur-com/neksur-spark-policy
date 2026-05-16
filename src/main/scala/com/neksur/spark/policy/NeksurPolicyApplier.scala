@@ -81,22 +81,22 @@ class NeksurPolicyApplier(spark: SparkSession) extends Rule[LogicalPlan] {
    * Phase 3 will switch to a dynamic discovery query against the
    * control plane.
    *
-   * If extractTableRef fails (subclass shape changed), this returns
-   * false (degrade gracefully — degraded write proceeds as if
-   * non-governed; ops alerted via the warn log).
+   * WR-06 fail-closed: if extractTableRef cannot resolve the plan's
+   * target table (e.g., a Spark minor version renamed the field) we
+   * raise a SparkException rather than silently treating the write as
+   * non-governed. The previous swallow-Throwable behavior was a
+   * fail-open path — any unexpected Spark internal change made every
+   * write skip policy enforcement, with only a warn log as audit.
    */
   private def isNeksurGoverned(plan: LogicalPlan): Boolean = {
     val configured = spark.sparkContext.getConf.get("spark.neksur.governed_tables", "")
     if (configured.isEmpty) return false
     val governed = configured.split(",").map(_.trim).filter(_.nonEmpty).toSet
-    try {
-      val ref = extractTableRef(plan)
-      governed.contains(ref)
-    } catch {
-      case _: Throwable =>
-        log.warn(s"NeksurPolicyApplier: could not extract tableRef from plan ${plan.getClass.getSimpleName}; degrading to non-governed")
-        false
-    }
+    // No try/catch — extractTableRef now raises SparkException on
+    // failure, which the Catalyst rule call site surfaces as a write
+    // failure (fail-closed posture).
+    val ref = extractTableRef(plan)
+    governed.contains(ref)
   }
 
   /**
@@ -105,26 +105,46 @@ class NeksurPolicyApplier(spark: SparkSession) extends Rule[LogicalPlan] {
    * based lookup avoids a hard import-time dependency on Spark's
    * sql/catalyst types.
    *
+   * WR-06: every error path raises a SparkException so callers can
+   * fail closed. Returning `plan.toString` was a fail-open footgun —
+   * a Spark minor-version rename of `table` → `tableInfo` would have
+   * silently routed every governed write through the non-governed
+   * path with zero alerting.
+   *
    * Returns the qualified name as a string — the canonical form that
    * spark.neksur.governed_tables stores.
    */
   private def extractTableRef(plan: LogicalPlan): String = {
-    // Try `table` field (AppendData, OverwriteByExpression).
+    val tableMethod = plan.getClass.getMethods.find(_.getName == "table")
+      .getOrElse {
+        throw new SparkException(
+          s"NeksurPolicyApplier: cannot extract tableRef from plan " +
+            s"${plan.getClass.getName} — no 'table' method (Spark version skew?)")
+      }
     try {
-      val tableField = plan.getClass.getMethods.find(_.getName == "table")
-      tableField match {
-        case Some(m) =>
-          val tbl = m.invoke(plan)
-          // tbl may be NamedRelation with `name` method.
-          val nameMethod = tbl.getClass.getMethods.find(_.getName == "name")
-          nameMethod match {
-            case Some(nm) => nm.invoke(tbl).toString
-            case None     => tbl.toString
+      val tbl = tableMethod.invoke(plan)
+      if (tbl == null) {
+        throw new SparkException(
+          s"NeksurPolicyApplier: plan ${plan.getClass.getName} returned null tableRef")
+      }
+      // tbl may be NamedRelation with `name` method.
+      val nameMethod = tbl.getClass.getMethods.find(_.getName == "name")
+      nameMethod match {
+        case Some(nm) =>
+          val n = nm.invoke(tbl)
+          if (n == null) {
+            throw new SparkException(
+              s"NeksurPolicyApplier: plan ${plan.getClass.getName} returned null name")
           }
-        case None => plan.toString
+          n.toString
+        case None => tbl.toString
       }
     } catch {
-      case _: Throwable => plan.toString
+      case se: SparkException => throw se
+      case t: Throwable =>
+        throw new SparkException(
+          s"NeksurPolicyApplier: reflection failed extracting tableRef from " +
+            s"${plan.getClass.getName}: ${t.getMessage}", t)
     }
   }
 }
