@@ -53,13 +53,27 @@ class NeksurPolicyApplier(spark: SparkSession) extends Rule[LogicalPlan] {
             )
         }
         val rewritten = ApplyPolicy.apply(write, policy)
-        rewritten.setTagValue(transformedTag, true)
+        // WR-08: tag every node in the rewritten subtree, not just the
+        // root. Catalyst's TreeNodeTag mechanism is documented as
+        // "best-effort across plan transformations" — if a subsequent
+        // optimizer rule extracts a sub-plan into a new wrapper, the
+        // root tag may be lost while the descendants persist. Tagging
+        // all descendants makes alreadyTransformed robust against
+        // common multi-pass optimizer rewrites that preserve at least
+        // one node from the rewritten subtree.
+        rewritten.foreach { node => node.setTagValue(transformedTag, true) }
         rewritten
     }
   }
 
-  private def alreadyTransformed(p: LogicalPlan): Boolean =
-    p.getTagValue(transformedTag).contains(true)
+  // WR-08: alreadyTransformed reports true if EITHER the root carries
+  // the tag OR any direct descendant does. This belt-and-suspenders the
+  // root-tag check against Catalyst rewrites that swap out the root
+  // node while preserving children (e.g., Project/Filter pushdown).
+  private def alreadyTransformed(p: LogicalPlan): Boolean = {
+    if (p.getTagValue(transformedTag).contains(true)) return true
+    p.children.exists(_.getTagValue(transformedTag).contains(true))
+  }
 
   /**
    * V2WriteCommand recognition — Iceberg 1.6.x ships AppendData /
