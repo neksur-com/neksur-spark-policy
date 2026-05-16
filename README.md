@@ -28,6 +28,51 @@ This is the first non-Go artifact in the Neksur stack. JVM tooling (sbt, Scala, 
 | Build | sbt | Standard for Scala libraries; `+test` cross-Scala matrix |
 | Test | ScalaTest 3.2.x | Idiomatic for Spark library testing |
 
+## Build
+
+sbt 1.9.7 + JDK 17 is the supported build environment. Common commands:
+
+```bash
+# Resolve dependencies (offline-friendly after first run; uses Maven Central + ~/.ivy2 cache).
+sbt update
+
+# Compile main + test sources.
+sbt compile
+
+# Run the test suite (boots a local SparkSession via SparkSessionFixture).
+sbt test
+
+# CI cross-Scala matrix (Phase 2 ships only 2.12.18; `+` is future-proofing for 2.13).
+sbt +test
+```
+
+`Test / fork := true` is set in `build.sbt` — each test class boots its own
+JVM so SparkSession singletons stay isolated across tests. Expect ~30s
+first-run cost while Spark + Iceberg boot inside the forked JVM.
+
+GitHub Actions CI runs `sbt +test` on every push and PR — see
+[`.github/workflows/sbt-test.yml`](.github/workflows/sbt-test.yml).
+
+### Spark + Iceberg Compatibility Matrix
+
+> **⚠ Warning — version drift bites hard.** Spark + Iceberg version pairs
+> are not freely substitutable. The Iceberg runtime jar is
+> Spark-version-specific (`iceberg-spark-runtime-3.5_2.12` is bound to
+> Spark 3.5 + Scala 2.12); pairing Iceberg 1.5.x with Spark 3.5 (or 1.6.x
+> with Spark 3.4) silently disables plan-class features (e.g.,
+> `V2WriteCommand` shape changes) and produces hard-to-trace failures
+> at write time. **Always pin the exact pair below.**
+
+| Component | Pinned Version | Notes |
+|---|---|---|
+| Scala     | 2.12.18 | Spark 3.5 canonical (only 2.12 cell in Phase 2; 2.13 deferred) |
+| Spark     | 3.5.4   | Current 3.5.x LTS patch (Apr 2026 release) |
+| Iceberg   | 1.6.1   | `iceberg-spark-runtime-3.5_2.12` matched to Spark 3.5 |
+| JDK       | 17      | Spark 3.5 supports JDK 8/11/17; 17 is the modern LTS pick |
+| sbt       | 1.9.7   | Pinned in `project/build.properties` |
+
+Future cells (deferred): Spark 3.5 + Iceberg 1.5.0 (back-compat); Scala 2.13 (Spark 4.x prep). See Phase 2 RESEARCH §Pitfall 5 for details.
+
 ## License
 
 **Business Source License 1.1** with a four-year **Change Date** to the **Apache License 2.0** — same license as [`neksur-com/neksur`](https://github.com/neksur-com/neksur). See [`LICENSE`](LICENSE) for the full text and [`LICENSE.md`](LICENSE.md) for a plain-English summary.

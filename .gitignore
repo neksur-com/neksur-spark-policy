@@ -2,8 +2,8 @@
 target/
 project/target/
 project/project/
-project/build.properties
 project/plugins/project/
+# NOTE: project/build.properties IS committed (sbt-version pin); do NOT add it here.
 
 # Scala
 *.class
