@@ -12,6 +12,7 @@
 package com.neksur.spark.policy.transforms
 
 import com.neksur.spark.policy.ColumnTransform
+import org.apache.spark.SparkException
 import org.apache.spark.sql.{Column, DataFrame}
 import org.apache.spark.sql.functions.{col, concat, lit, sha2, substring}
 import org.apache.spark.sql.types.StringType
@@ -54,14 +55,24 @@ object ColumnTokenize {
 
   /**
    * Build the tokenized-column expression. The salt ID is read from
-   * `t.params("tenant_salt_id")`, defaulting to `"default"` if absent
-   * (so a misconfigured policy still produces a stable token rather
-   * than failing the write — fail-safe over fail-closed here, since
-   * the column still gets transformed away from plaintext).
+   * `t.params("tenant_salt_id")` — REQUIRED (WR-10). A missing salt is
+   * a hard failure: two distinct tenants both missing the salt would
+   * produce IDENTICAL tokens for identical inputs
+   * (`sha256("default" || "ssn" || "123-45-6789")` is the same across
+   * tenants), enabling cross-tenant correlation by anyone with
+   * multi-tenant warehouse access. The previous "default" fallback
+   * silently undermined the per-tenant isolation guarantee documented
+   * at the file level.
    */
   def apply(df: DataFrame, t: ColumnTransform): Column = {
     val _ = df // reserved for future schema-aware tokenization
-    val tenantSaltID = t.params.getOrElse("tenant_salt_id", "default")
+    val tenantSaltID = t.params.getOrElse("tenant_salt_id",
+      throw new SparkException(
+        s"ColumnTokenize: tenant_salt_id is required for column ${t.column} — " +
+          s"a missing or default salt would enable cross-tenant correlation by " +
+          s"producing identical tokens across tenants for identical inputs."
+      )
+    )
     // Token = first 16 hex chars of sha256(salt || column || value)
     substring(
       sha2(concat(lit(tenantSaltID), lit(t.column), col(t.column).cast(StringType)), 256),
