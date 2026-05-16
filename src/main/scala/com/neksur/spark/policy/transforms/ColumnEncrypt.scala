@@ -12,6 +12,7 @@
 package com.neksur.spark.policy.transforms
 
 import com.neksur.spark.policy.ColumnTransform
+import org.apache.spark.SparkException
 import org.apache.spark.sql.{Column, DataFrame}
 import org.apache.spark.sql.functions.{col, concat, lit, sha2, substring}
 import org.apache.spark.sql.types.StringType
@@ -68,8 +69,33 @@ object ColumnEncrypt {
    * scale; the real Plan 02-08 path replaces this with proper
    * ciphertext bytes inside the Parquet writer.
    */
+  /**
+   * WR-09: SparkConf key gating placeholder usage. The Phase 2
+   * placeholder is fail-safe for privacy (no plaintext) but is a
+   * data-integrity landmine — the `[ENCRYPTED:<sha256-prefix>]`
+   * value is IRREVERSIBLE and a subsequent decrypt workflow cannot
+   * recover the plaintext. Without a runtime gate, a customer who
+   * deployed the Phase 2 jar into "production" would silently
+   * destroy data. Require the operator to acknowledge via
+   * `--conf spark.neksur.allow_placeholder_encrypt=true`.
+   */
+  val AllowPlaceholderConfKey: String = "spark.neksur.allow_placeholder_encrypt"
+
   def apply(df: DataFrame, t: ColumnTransform): Column = {
-    val _ = df // reserved for future schema-aware encryption
+    // WR-09: refuse to apply the placeholder unless the operator
+    // explicitly opts in. Plan 02-08 lands real Parquet modular
+    // encryption + KmsKeyProvider DEK derivation; until then a
+    // misconfigured job that reaches this code path with the gate
+    // unset would emit an irreversible 16-hex-char string into the
+    // customer's data, with no recovery path.
+    if (df.sparkSession.sparkContext.getConf.get(AllowPlaceholderConfKey, "false") != "true") {
+      throw new SparkException(
+        s"ColumnEncrypt: Phase 2 placeholder IRREVERSIBLY destroys data — set " +
+          s"$AllowPlaceholderConfKey=true to acknowledge that the column ${t.column} " +
+          s"will be replaced with [ENCRYPTED:<sha256-prefix>] and cannot be decrypted. " +
+          s"Plan 02-08 lands real Parquet modular encryption."
+      )
+    }
     val cmkArn = t.params.getOrElse("cmk_arn", "<unset>")
     // Placeholder shape: "[ENCRYPTED:" + first-16-hex-chars-of-sha256 + "]"
     concat(
