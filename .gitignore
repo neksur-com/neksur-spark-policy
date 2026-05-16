@@ -1,0 +1,50 @@
+# sbt
+target/
+project/target/
+project/project/
+project/build.properties
+project/plugins/project/
+
+# Scala
+*.class
+*.log
+.scala_dependencies
+.history
+.cache
+.cache-main
+.cache-tests
+.classpath
+.project
+.settings/
+.bsp/
+.metals/
+.bloop/
+metals.sbt
+
+# IntelliJ
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# VSCode
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.jar
+*.war
+*.ear
+!project-build-tools/*.jar
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Spark / Iceberg test artifacts
+spark-warehouse/
+metastore_db/
+derby.log
