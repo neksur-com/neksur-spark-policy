@@ -66,13 +66,17 @@ class NeksurPolicyApplier(spark: SparkSession) extends Rule[LogicalPlan] {
     }
   }
 
-  // WR-08: alreadyTransformed reports true if EITHER the root carries
-  // the tag OR any direct descendant does. This belt-and-suspenders the
-  // root-tag check against Catalyst rewrites that swap out the root
-  // node while preserving children (e.g., Project/Filter pushdown).
+  // WR-A9: alreadyTransformed walks the entire subtree (collectFirst over
+  // all nodes) and returns true if ANY descendant carries the
+  // transformedTag. Robust against arbitrarily-deep Catalyst optimizer
+  // rewrites that preserve at least one tagged node — including the
+  // Aggregate(Filter(Project(rewritten_write))) case that the previous
+  // root + direct-children check (iteration-1 WR-08 fix) would miss.
+  // Combined with the apply()-side `rewritten.foreach { setTagValue }`
+  // call, every node in the rewritten subtree carries the tag, so any
+  // surviving descendant short-circuits a re-application.
   private def alreadyTransformed(p: LogicalPlan): Boolean = {
-    if (p.getTagValue(transformedTag).contains(true)) return true
-    p.children.exists(_.getTagValue(transformedTag).contains(true))
+    p.collectFirst { case n if n.getTagValue(transformedTag).contains(true) => true }.nonEmpty
   }
 
   /**

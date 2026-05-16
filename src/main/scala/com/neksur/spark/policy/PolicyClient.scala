@@ -247,19 +247,29 @@ object PolicyClient {
   val TimeoutConfKey: String  = "spark.neksur.timeout_seconds"
 
   /**
-   * Build a `PolicyClient` from a `SparkConf`. Throws
-   * `IllegalArgumentException` if `endpoint` or `token` is missing —
-   * jobs that try to enable the extension without configuring the
-   * control plane MUST fail fast at startup (not at first write).
+   * Build a `PolicyClient` from a `SparkConf`. Throws `SparkException`
+   * if `endpoint` or `token` is missing — Catalyst surfaces this as a
+   * write failure per the rule's fail-closed contract (WR-A7).
+   *
+   * Why `SparkException` (not `IllegalArgumentException`): the
+   * `NeksurPolicyApplier` Catalyst rule documents (at the class level)
+   * that initialization errors propagate as `SparkException` via
+   * `Try.get`. The earlier `IllegalArgumentException` throws here
+   * forced the rule to wrap-and-rethrow at the `lazy val policyClient`
+   * site to keep the contract honest; the lift to `SparkException`
+   * here removes that wrap layer and makes the failure mode honest
+   * at the throw site — jobs that try to enable the extension without
+   * configuring the control plane fail fast at startup with the
+   * documented exception type.
    */
   def fromSparkConf(conf: SparkConf): PolicyClient = {
     val endpoint = conf.getOption(EndpointConfKey).getOrElse {
-      throw new IllegalArgumentException(
+      throw new SparkException(
         s"$EndpointConfKey is required to enable Neksur policy enforcement"
       )
     }
     val token = conf.getOption(TokenConfKey).getOrElse {
-      throw new IllegalArgumentException(
+      throw new SparkException(
         s"$TokenConfKey is required to enable Neksur policy enforcement"
       )
     }

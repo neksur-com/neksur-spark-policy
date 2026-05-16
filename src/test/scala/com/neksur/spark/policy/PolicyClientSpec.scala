@@ -14,7 +14,7 @@ import java.nio.charset.StandardCharsets
 import java.time.Duration
 
 import com.sun.net.httpserver.{HttpExchange, HttpHandler, HttpServer}
-import org.apache.spark.SparkException
+import org.apache.spark.{SparkConf, SparkException}
 import org.scalatest.BeforeAndAfterEach
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -152,5 +152,31 @@ class PolicyClientSpec extends AnyFlatSpec with Matchers with BeforeAndAfterEach
     err shouldBe a[SparkException]
     err.getMessage should include("fetch failed")
     err.getMessage should not include "test-jwt-do-not-use-in-prod"
+  }
+
+  // ---------------------------------------------------------------
+  // WR-A7 regression coverage — fromSparkConf must raise
+  // SparkException (NOT IllegalArgumentException) on missing config,
+  // matching the NeksurPolicyApplier class-level fail-closed contract.
+  // ---------------------------------------------------------------
+
+  behavior of "PolicyClient.fromSparkConf"
+
+  it should "throw SparkException when spark.neksur.endpoint is missing" in {
+    val conf = new SparkConf(loadDefaults = false)
+      .set(PolicyClient.TokenConfKey, "tkn")
+    val ex = intercept[SparkException] {
+      PolicyClient.fromSparkConf(conf)
+    }
+    ex.getMessage should include("endpoint")
+  }
+
+  it should "throw SparkException when spark.neksur.token is missing" in {
+    val conf = new SparkConf(loadDefaults = false)
+      .set(PolicyClient.EndpointConfKey, "http://127.0.0.1:0")
+    val ex = intercept[SparkException] {
+      PolicyClient.fromSparkConf(conf)
+    }
+    ex.getMessage should include("token")
   }
 }
