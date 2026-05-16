@@ -13,7 +13,9 @@
 package com.neksur.spark.policy
 
 import java.net.URI
+import java.net.URLEncoder
 import java.net.http.{HttpClient, HttpRequest, HttpResponse}
+import java.nio.charset.StandardCharsets
 import java.time.Duration
 
 import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
@@ -97,9 +99,17 @@ class PolicyClient(
    *   stack trace in the driver log.
    */
   def fetchTransformPlan(tableRef: String): Try[Policy] = {
+    // WR-07: URL-encode the tableRef query parameter. Without encoding,
+    // a tableRef containing '&', '#', '?' would split the query string
+    // (control plane reads only the substring up to the first '&'),
+    // and a tableRef containing '+' or '%' would be silently
+    // misinterpreted. The control-plane handler validates the parameter
+    // server-side, but a defense-in-depth client-side encode ensures
+    // the right value reaches the server in the first place.
+    val encodedTableRef = URLEncoder.encode(tableRef, StandardCharsets.UTF_8)
     val req = HttpRequest
       .newBuilder()
-      .uri(URI.create(s"$endpoint/v1/policy/transform-plan?table=$tableRef"))
+      .uri(URI.create(s"$endpoint/v1/policy/transform-plan?table=$encodedTableRef"))
       .header("Authorization", s"Bearer $token")
       .timeout(timeout)
       .GET()
