@@ -78,13 +78,57 @@ javacOptions ++= Seq("-source", "17", "-target", "17")
 // a future RC needs validating (commented out by default).
 // resolvers += "Apache Snapshots" at "https://repository.apache.org/content/repositories/snapshots/"
 
-// License metadata for downstream Maven publish (Plan 02-08 wires the
-// publish step; this block keeps the POM well-formed in the meantime).
-licenses += ("Business Source License 1.1", url("https://mariadb.com/bsl11/"))
-homepage  := Some(url("https://github.com/neksur-com/neksur-spark-policy"))
-scmInfo   := Some(
+// ── Publish configuration (Plan 02-08 Task 1) ────────────────────────────────
+//
+// publishTo: GitHub Packages internal Maven registry.
+// Triggered by the maven-publish.yml workflow on push of a `v*` tag.
+// Required secrets (configure in repo Settings → Secrets):
+//   GITHUB_TOKEN — automatically provided in GitHub Actions; no manual setup.
+//   GPG_PRIVATE_KEY / GPG_PASSPHRASE — only needed for publishSigned.
+//     For Phase 2 we use publishSigned to produce a detached .asc signature
+//     that enables checksum verification by the Neksur server's jar loader.
+//
+// To publish locally (dev):
+//   sbt publishSigned
+// To verify the published artifact:
+//   curl -u <github_user>:<GITHUB_TOKEN> \
+//     "https://maven.pkg.github.com/neksur-com/neksur-spark-policy" | grep 0.1.0-rc1
+// ─────────────────────────────────────────────────────────────────────────────
+publishTo := Some(
+  "GitHub Packages" at "https://maven.pkg.github.com/neksur-com/neksur-spark-policy"
+)
+
+// Credentials are picked up from the environment at CI time via GITHUB_TOKEN;
+// locally, use `credentials += Credentials(Path.userHome / ".sbt" / ".credentials")`.
+credentials += Credentials(
+  "GitHub Packages",
+  "maven.pkg.github.com",
+  sys.env.getOrElse("GITHUB_ACTOR", ""),
+  sys.env.getOrElse("GITHUB_TOKEN", "")
+)
+
+// BSL 1.1 license declaration — required for POM well-formedness.
+// Change Date: 2030-05-10 (4 years from initial ship per ADR-002 §3).
+// Change License: Apache 2.0 (D-002.03).
+licenses := Seq("BSL-1.1" -> url("https://github.com/neksur-com/neksur-spark-policy/blob/main/LICENSE"))
+
+homepage := Some(url("https://github.com/neksur-com/neksur-spark-policy"))
+
+scmInfo := Some(
   ScmInfo(
     url("https://github.com/neksur-com/neksur-spark-policy"),
     "scm:git:git@github.com:neksur-com/neksur-spark-policy.git"
   )
 )
+
+// pomExtra: SCM block for Maven Central–compatible POM generation.
+// sbt's ScmInfo already generates <scm> in the POM; pomExtra adds
+// developer info required for Maven publish conventions.
+pomExtra :=
+  <developers>
+    <developer>
+      <id>neksur-eng</id>
+      <name>Neksur Engineering</name>
+      <url>https://github.com/neksur-com</url>
+    </developer>
+  </developers>

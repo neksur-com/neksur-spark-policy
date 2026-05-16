@@ -1,0 +1,127 @@
+# maven-publish.yml — neksur-spark-policy JVM library publish to GitHub Packages.
+#
+# Phase 2 Plan 02-08, Task 1 — wires the Maven publish workflow for the
+# neksur-spark-policy JVM library (BSL 1.1, version 0.1.0-rc1 for Phase 2
+# first release per PLAN must_haves §2).
+#
+# Trigger: push of any tag matching `v*` (e.g., `v0.1.0-rc1`).
+# Target: GitHub Packages Maven registry at
+#   https://maven.pkg.github.com/neksur-com/neksur-spark-policy
+#
+# Steps:
+#   1. actions/checkout + Java 17 setup
+#   2. sbt cache (coursier directories)
+#   3. sbt clean test                  — gate: tests must pass before publish
+#   4. sbt publishSigned               — signs + uploads to GitHub Packages
+#
+# Required secrets (configure in repo Settings → Secrets and variables → Actions):
+#   GITHUB_TOKEN — auto-injected by GitHub Actions; no manual setup required.
+#                  Needs packages:write permission (granted by default for
+#                  GITHUB_TOKEN on the same repository).
+#   GPG_PRIVATE_KEY — PGP private key (ASCII-armored) for sbt-pgp signing.
+#     Export: `gpg --armor --export-secret-key <key-id>`
+#   GPG_PASSPHRASE  — Passphrase for the PGP private key.
+#
+# Checksum + signing conventions (per PLAN must_haves §2):
+#   sbt publishSigned produces:
+#     - neksur-spark-policy_2.12-0.1.0-rc1.jar
+#     - neksur-spark-policy_2.12-0.1.0-rc1.jar.asc  (PGP detached signature)
+#     - neksur-spark-policy_2.12-0.1.0-rc1.pom
+#     - neksur-spark-policy_2.12-0.1.0-rc1.pom.asc
+#     - neksur-spark-policy_2.12-0.1.0-rc1-sources.jar (if publishSources enabled)
+#   MD5 + SHA1 checksums are generated automatically by sbt-pgp + the Maven
+#   resolver. No additional step needed.
+#
+# Pattern: mirrors .github/workflows/sbt-test.yml (Plan 02-02) with the
+# addition of the tag trigger + pgp import + publishSigned step.
+
+name: Maven Publish (GitHub Packages)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  packages: write  # required to push to GitHub Packages Maven registry
+
+jobs:
+  publish:
+    name: Publish to GitHub Packages
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: temurin
+
+      # Cache coursier + ivy local for faster repeat runs.
+      # Key includes OS + Scala version + build.sbt hash.
+      - name: Cache sbt / coursier
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/coursier
+            ~/.ivy2/cache
+            ~/.sbt
+          key: ${{ runner.os }}-sbt-${{ hashFiles('**/build.sbt', '**/project/build.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-sbt-
+
+      # Import the GPG private key so sbt-pgp can sign artifacts.
+      # GPG_PRIVATE_KEY is an ASCII-armored private key stored as a
+      # repository secret. GPG_PASSPHRASE unlocks it.
+      - name: Import GPG signing key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
+          gpg-connect-agent reloadagent /bye || true
+
+      # Gate: all tests must pass before publish.
+      # Mirrors the sbt-test.yml test step to avoid publishing a broken jar.
+      - name: Run tests
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sbt --batch clean test
+        # Per sbt-test.yml: test / fork := true (SparkSession isolation);
+        # forked JVM inherits GITHUB_TOKEN for any test that needs it.
+
+      # Publish signed artifacts to GitHub Packages.
+      # build.sbt publishTo already points at maven.pkg.github.com;
+      # credentials are picked up from GITHUB_ACTOR + GITHUB_TOKEN env vars
+      # per the credentials += Credentials(...) block in build.sbt.
+      - name: Publish signed jar to GitHub Packages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          sbt --batch publishSigned
+
+      # Summarize the published artifact coordinates.
+      - name: Publish summary
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "## Maven publish: neksur-spark-policy ${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Registry:** https://maven.pkg.github.com/neksur-com/neksur-spark-policy" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```xml' >> "$GITHUB_STEP_SUMMARY"
+          echo "<dependency>" >> "$GITHUB_STEP_SUMMARY"
+          echo "  <groupId>com.neksur</groupId>" >> "$GITHUB_STEP_SUMMARY"
+          echo "  <artifactId>neksur-spark-policy_2.12</artifactId>" >> "$GITHUB_STEP_SUMMARY"
+          echo "  <version>${VERSION}</version>" >> "$GITHUB_STEP_SUMMARY"
+          echo "</dependency>" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**sbt:** \`\"com.neksur\" %% \"neksur-spark-policy\" % \"${VERSION}\"\`" >> "$GITHUB_STEP_SUMMARY"
